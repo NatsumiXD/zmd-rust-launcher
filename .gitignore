@@ -1,0 +1,60 @@
+# Rust build output and downloaded runtime files
+/target/
+/artifacts/
+**/endfield-cache/
+
+# Compiled programs and third-party binaries (including official Games.exe)
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.ilk
+*.obj
+*.rlib
+*.rmeta
+*.zip
+*.7z
+*.zip.[0-9]*
+
+# Generated reverse-engineering evidence and local verification records
+/rea-evidence.json
+/analysis/*.json
+/analysis/*.txt
+/analysis/*.log
+/analysis/*.xml
+/analysis/hibernate-after-research.ps1
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+# Local logs, temporary files, crash dumps, and Python caches
+*.log
+*.tmp
+*.bak
+*.dmp
+__pycache__/
+*.py[cod]
+
+# Local credentials and workspace/editor state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+/.codex/
+/.agents/
+/.rea/
+.vs/
+.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
