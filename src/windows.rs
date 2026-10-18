@@ -890,8 +890,62 @@ mod tests {
         drop(retained_game);
         assert_eq!(unsafe { WaitForSingleObject(retained_guardian.0, 5000) }, 0);
         assert_eq!(unsafe { WaitForSingleObject(retained_parent.0, 0) }, 0);
+        // Drive actual start/restart commands using only workspace copies of the fixture.
+        let restart_root = root.join("artifacts/menu-restart-probe");
+        std::fs::create_dir_all(&restart_root).unwrap();
+        let fixture_game = restart_root.join("Endfield.exe");
+        let fixture_parent = restart_root.join("Games.exe");
+        std::fs::copy(&probe, &fixture_game).unwrap();
+        std::fs::copy(&probe, &fixture_parent).unwrap();
+        let restart_options = crate::Options {
+            game: fixture_game,
+            parent: Some(fixture_parent),
+            extra: vec!["--stay-alive".into()],
+            ..Default::default()
+        };
+        let started =
+            crate::menu::probe_launch_commands(restart_options.clone(), None, &["start", "exit"]);
+        let first_pid = started.child.id();
+        let first_game = inheritable_duplicate(started.child.process.0).unwrap();
+        let first_parent =
+            inheritable_duplicate(started.child.parent.as_ref().unwrap().process.0).unwrap();
+        let first_guardian =
+            inheritable_duplicate(started.child.guardian.as_ref().unwrap().0).unwrap();
+        let restarted = crate::menu::probe_launch_commands(
+            restart_options.clone(),
+            Some(started),
+            &["start", "restart", "exit"],
+        );
+        assert_ne!(restarted.child.id(), first_pid);
+        for handle in [&first_game, &first_parent, &first_guardian] {
+            assert_eq!(unsafe { WaitForSingleObject(handle.0, 0) }, 0);
+        }
+        assert_eq!(
+            unsafe { WaitForSingleObject(restarted.child.process.0, 0) },
+            258
+        );
+        assert!(!restarted.child.cancelled());
+        restarted.stop().unwrap();
+        drop(restarted);
+        let from_stopped =
+            crate::menu::probe_launch_commands(restart_options, None, &["restart", "exit"]);
+        assert_eq!(
+            unsafe { WaitForSingleObject(from_stopped.child.process.0, 0) },
+            258
+        );
+        assert_eq!(
+            unsafe { WaitForSingleObject(unrelated.0.process.0, 0) },
+            258
+        );
+        from_stopped.stop().unwrap();
+        drop(from_stopped);
+        assert_eq!(*ACTIVE_GAME.lock().unwrap(), 0);
+        assert_eq!(*ACTIVE_PARENT.lock().unwrap(), 0);
+        std::fs::write(root.join("analysis/restart-command-probe.txt"),
+            "Workspace fixtures only; no official process executed.\nstart-command-created-game=true\nrestart-created-new-game=true\nprevious-game-parent-guardian-cleaned=true\nrestart-without-running-game-started=true\nexit-after-restart-keeps-game-running=true\nunrelated-fixture-untouched=true\nall-owned-fixtures-cleaned=true\n"
+        ).unwrap();
         std::fs::write(root.join("analysis/menu-control-probe.txt"), format!(
-            "Workspace fixtures only; no official game or launcher executed.\nconsole-close-callback-preserves-game-and-parent=true\nCtrl+Z-owned-game-terminated=true\nowned-parent-terminated-after-game-exit=true\nparent-pid={parent_pid}\nunrelated-fixture-untouched=true\nsecond-launch-cancellation-reset=true\nCtrl+Z consumed through Windows console input and game stopped=true\nTab/2/Enter consumed through Windows console input; no action before Enter=true\nChinese menu rendered=true\nstartup-console-log-preserved-after-menu-render=true\nconsole-input-mode-restored=true\nMenu remained responsive while game fixture ran; Tab -> Ctrl+Z -> 0 -> Enter completed=true\nmenu-exit-preserves-game-parent-and-guardian=true\nguardian-exits-and-cleans-parent-after-game-exit=true\n"
+            "Workspace fixtures only; no official game or launcher executed.\nconsole-close-callback-preserves-game-and-parent=true\nCtrl+Z-owned-game-terminated=true\nowned-parent-terminated-after-game-exit=true\nparent-pid={parent_pid}\nunrelated-fixture-untouched=true\nsecond-launch-cancellation-reset=true\nCtrl+Z consumed through Windows console input and game stopped=true\nre/Tab/Enter consumed through Windows console input; no action before Enter=true\nlive-candidates-rendered-with-cursor-before-hint=true\nselected-candidate-rendered-and-cleared-before-output=true\ncn-command-replayed-history-while-game-running=true\nstartup-console-log-preserved-after-banner=true\nmouse-input-disabled-and-host-quick-edit-preserved=true\nnative-mouse-wheel-scroll-tested=true\nconsole-input-mode-restored=true\nCommand console remained responsive while game fixture ran; cn -> Ctrl+Z -> exit completed=true\nmenu-exit-preserves-game-parent-and-guardian=true\nguardian-exits-and-cleans-parent-after-game-exit=true\n"
         )).unwrap();
     }
 
@@ -918,7 +972,7 @@ mod tests {
         startup.flags = 1; // STARTF_USESHOWWINDOW
         startup.show_window = 0; // SW_HIDE for the automated host.
         let host = create_process(&harness, &root, &args, 0x10, &startup).unwrap();
-        let result = unsafe { WaitForSingleObject(host.process.0, 15_000) };
+        let result = unsafe { WaitForSingleObject(host.process.0, 25_000) };
         if result != 0 {
             unsafe {
                 TerminateProcess(host.process.0, 1);

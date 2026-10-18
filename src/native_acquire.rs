@@ -165,38 +165,44 @@ impl Backend for NativeBackend {
         verify_official(path)
     }
     fn image_version(&mut self, path: &Path) -> Result<String, String> {
-        let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        // SAFETY: version.dll owns the parser; the aligned buffer and output
-        // pointer remain alive, and fixed-info size is checked before reading.
-        unsafe {
-            let size = GetFileVersionInfoSizeW(name.as_ptr(), null_mut());
-            if size == 0 || size > 1_048_576 {
-                return Err("cannot read Games.exe file version".into());
-            }
-            let mut data = vec![0u64; (size as usize).div_ceil(8)];
-            if GetFileVersionInfoW(name.as_ptr(), 0, size, data.as_mut_ptr().cast()) == 0 {
-                return Err("cannot load Games.exe version resource".into());
-            }
-            let root = wide("\\");
-            let mut info = null_mut();
-            let mut len = 0;
-            if VerQueryValueW(data.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) == 0
-                || info.is_null()
-                || len < size_of::<VS_FIXEDFILEINFO>() as u32
-            {
-                return Err("missing fixed Games.exe version".into());
-            }
-            let value = std::ptr::read_unaligned(info.cast::<VS_FIXEDFILEINFO>());
-            if value.dwSignature != 0xfeef04bd {
-                return Err("invalid Games.exe version resource".into());
-            }
-            Ok(format!(
-                "{}.{}.{}",
-                value.dwFileVersionMS >> 16,
-                value.dwFileVersionMS & 0xffff,
-                value.dwFileVersionLS >> 16
-            ))
+        let [major, minor, patch, _build] = file_version(path)?;
+        // The official update API uses the first three file-version components.
+        Ok(format!("{major}.{minor}.{patch}"))
+    }
+}
+
+pub fn file_version(path: &Path) -> Result<[u16; 4], String> {
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: version.dll owns the parser; the aligned buffer and output
+    // pointer remain alive, and fixed-info size is checked before reading.
+    unsafe {
+        let size = GetFileVersionInfoSizeW(name.as_ptr(), null_mut());
+        if size == 0 || size > 1_048_576 {
+            return Err("cannot read executable file version".into());
         }
+        let mut data = vec![0u64; (size as usize).div_ceil(8)];
+        if GetFileVersionInfoW(name.as_ptr(), 0, size, data.as_mut_ptr().cast()) == 0 {
+            return Err("cannot load executable version resource".into());
+        }
+        let root = wide("\\");
+        let mut info = null_mut();
+        let mut len = 0;
+        if VerQueryValueW(data.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) == 0
+            || info.is_null()
+            || len < size_of::<VS_FIXEDFILEINFO>() as u32
+        {
+            return Err("missing fixed executable file version".into());
+        }
+        let value = std::ptr::read_unaligned(info.cast::<VS_FIXEDFILEINFO>());
+        if value.dwSignature != 0xfeef04bd {
+            return Err("invalid executable version resource".into());
+        }
+        Ok([
+            (value.dwFileVersionMS >> 16) as u16,
+            value.dwFileVersionMS as u16,
+            (value.dwFileVersionLS >> 16) as u16,
+            value.dwFileVersionLS as u16,
+        ])
     }
 }
 

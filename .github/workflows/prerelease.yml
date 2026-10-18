@@ -1,0 +1,119 @@
+name: Windows build and prerelease
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Check and build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      tag: ${{ steps.package.outputs.tag }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust and checks
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+
+      - name: Check formatting
+        run: cargo +stable fmt --check
+
+      - name: Lint
+        run: cargo +stable clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Test library without launching the game
+        run: cargo +stable test --locked --lib --target x86_64-pc-windows-msvc
+
+      - name: Build release executable
+        run: cargo +stable build --locked --release --bin endfield-direct-launch --target x86_64-pc-windows-msvc
+
+      - name: Verify administrator manifest and package
+        id: package
+        run: |
+          ./tools/Package-Release.ps1 `
+            -ExecutablePath target/x86_64-pc-windows-msvc/release/endfield-direct-launch.exe `
+            -OutputDirectory artifacts/ci-release `
+            -BuildId "$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT" `
+            -CommitSha $env:GITHUB_SHA
+
+      - name: Save release files
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-x64-release
+          path: |
+            artifacts/ci-release/endfield-direct-launch.exe
+            artifacts/ci-release/*.zip
+            artifacts/ci-release/SHA256SUMS.txt
+            artifacts/ci-release/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+
+  prerelease:
+    name: Publish GitHub prerelease
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download checked release files
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: windows-x64-release
+          path: dist
+
+      - name: Verify transferred files
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS.txt
+
+      - name: Publish prerelease with all assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          GH_PROMPT_DISABLED: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          Automated Windows x64 prerelease of Endfield Launcher ${RELEASE_VERSION}.
+
+          Commit: ${GITHUB_SHA}
+          Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Download the EXE directly or extract the portable ZIP. Administrator permission is required.
+          Official Games.exe and game files are not bundled. The launcher checks/reuses or downloads official Games.exe when needed.
+          Use --game to specify your Endfield.exe path. Type help in the command console for start, restart, cn and other commands.
+          SHA256SUMS.txt contains checksums for the EXE, ZIP and build metadata.
+
+          自动构建的 Windows x64 预发布版本，需要管理员权限。可直接下载 EXE 或解压便携 ZIP。
+          不包含官方 Games.exe 或游戏文件；启动器会按需检查、复用或获取官方 Games.exe。
+          使用 --game 指定终末地主程序位置；命令终端输入 help 查看启动、重启等指令。
+          EOF
+          gh release create "$RELEASE_TAG" \
+            dist/endfield-direct-launch.exe dist/*.zip dist/SHA256SUMS.txt dist/build-info.json \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Endfield Launcher ${RELEASE_VERSION} (${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT})" \
+            --notes-file release-notes.md --prerelease --latest=false

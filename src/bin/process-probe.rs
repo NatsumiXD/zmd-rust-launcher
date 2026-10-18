@@ -61,11 +61,11 @@ mod probe {
                 return Err("probe requires output file path".into());
             }
         };
-        if output == "--stay-alive" {
+        let extra: Vec<_> = args.collect();
+        if output == "--stay-alive" || extra.iter().any(|arg| arg == "--stay-alive") {
             std::thread::sleep(std::time::Duration::from_secs(60));
             return Ok(());
         }
-        let extra: Vec<_> = args.collect();
         // SAFETY: documented snapshot call, invalid handle checked below.
         let snapshot = unsafe { CreateToolhelp32Snapshot(2, 0) };
         if snapshot as isize == -1 {

@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod acquisition;
-mod language;
 mod logging;
 #[cfg(windows)]
 mod menu;
@@ -16,9 +15,12 @@ mod windows;
 const DEFAULT_GAME: &str = r"D:\yj\Hypergryph Launcher\games\Arknights Endfield\Endfield.exe";
 const HELP: &str = "endfield-direct-launch [OPTIONS] [-- EXTRA_GAME_ARGS...]
 
-Default: print startup logs, check/download, start the game, then show the input menu.
-Type a menu number and press Enter; startup logs remain visible.
-Tab switches the menu between English and Chinese.
+Default: print English startup logs, start the game, then open the command console.
+Commands: start, restart, update, preview, status, stop, cn, help, exit.
+restart stops this session's game, waits for cleanup, then checks updates and starts again.
+cn prints earlier session logs in Chinese; future logs remain English.
+Candidates appear as you type; Tab / Shift+Tab cycle completions.
+Enter runs the typed command; Up/Down recalls command history.
 With command-line options: check/download if needed, then start the game.
 
   --game PATH          Absolute path to Endfield.exe
@@ -31,7 +33,7 @@ With command-line options: check/download if needed, then start the game.
   --render MODE        default | dx11 | vk (vk adds no unverified flag)
   --sub-channel VALUE  launcher_sub_channel (default: 1; none omits it)
   --tracking-code VALUE Optional tracking_code
-  --menu               Open the menu without automatically starting the game
+  --menu               Open the command console without automatically starting the game
   --launch             Check/download if needed, then launch without a menu
   --update-only        Check/download Games.exe without starting the game
   --dry-run            Preview only; no network, downloads, or process creation
@@ -414,6 +416,28 @@ fn run(options: Options) -> Result<bool, String> {
     }
 }
 
+fn log_executable_details(path: &Path, chinese_name: &str, english_name: &str) {
+    logging::info(
+        format!("{chinese_name} 路径：{}", path.display()),
+        format!("{english_name} path: {}", path.display()),
+    );
+    #[cfg(windows)]
+    let version = native_acquire::file_version(path)
+        .map(|[major, minor, patch, build]| format!("{major}.{minor}.{patch}.{build}"));
+    #[cfg(not(windows))]
+    let version: Result<String, String> = Err("file-version reading requires Windows".into());
+    match version {
+        Ok(version) => logging::info(
+            format!("{chinese_name} 文件版本：{version}"),
+            format!("{english_name} file version: {version}"),
+        ),
+        Err(error) => logging::info(
+            format!("{chinese_name} 文件版本：未知（{error}）；仅影响版本显示。"),
+            format!("{english_name} file version: unknown ({error}); display only."),
+        ),
+    }
+}
+
 fn execute(mut options: Options) -> Result<Outcome, String> {
     if !options.game.is_absolute() {
         return Err("--game must be an absolute path".into());
@@ -421,6 +445,7 @@ fn execute(mut options: Options) -> Result<Outcome, String> {
     if options.action != Action::UpdateOnly {
         validate_game(&options.game)?;
     }
+    log_executable_details(&options.game, "终末地主程序 Endfield.exe", "Endfield.exe");
     let mut _managed_parent: Option<acquisition::ReadyParent> = None;
     if !options.direct {
         if let Some(parent) = &options.parent {
@@ -484,6 +509,13 @@ fn execute(mut options: Options) -> Result<Outcome, String> {
                 }
             }
         }
+    }
+    if let Some(parent) = &options.parent {
+        let name = parent
+            .file_name()
+            .unwrap_or(parent.as_os_str())
+            .to_string_lossy();
+        log_executable_details(parent, &format!("官方父映像 {name}"), &name);
     }
     if options.action == Action::UpdateOnly {
         logging::info(

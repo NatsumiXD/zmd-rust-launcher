@@ -2,11 +2,11 @@
 
 此前的父进程启动方案已于 2026-10-16 由用户确认进入正常游戏画面，关闭后自有父进程清理完成。游戏检查父进程映像的文件名及签名信息；仅补命令行参数的旧方案会返回认证错误 10100。0.2.0 新功能的验证边界见本文末尾。
 
-0.2.0 已将查询、下载、ZIP 提取、MD5/SHA-256、Windows 签名和版本检查写入 Rust；运行不依赖 PowerShell、Python 或官方安装器。**默认不带参数即输出启动日志、检查更新并启动游戏，创建游戏进程后立即进入输入式菜单。** 菜单不清屏，启动检查、下载、进程创建和错误信息保留在控制台。菜单保持响应，游戏继续运行；这不代表已经检测到游戏主界面。
+0.2.0 已将查询、下载、ZIP 提取、MD5/SHA-256、Windows 签名和版本检查写入 Rust；运行不依赖 PowerShell、Python 或官方安装器。**默认不带参数即输出英文启动日志、检查更新并启动游戏，创建游戏进程后进入 `endfield> ` 命令终端。** 终端不清屏，保留启动检查、下载、进程创建和错误信息。终端保持响应，游戏继续运行；这不代表已经检测到游戏主界面。
 
-在启动器窗口输入 **1/2/3/0 后按 Enter** 执行，Backspace 修改输入，**Tab** 切换中英文。**Ctrl+Z 主动关闭游戏并保留菜单**；输入 0 或 Q 后按 Enter，或按 Esc / Ctrl+C，只退出启动器，游戏继续运行。直接关闭 Rust 窗口也保留游戏。空输入和无效编号不会执行操作。游戏自然退出后，菜单更新状态，可再次启动。`--menu` 只打开菜单，`--launch` 保留无菜单的命令行启动方式。
+输入命令后按 Enter 执行：`help` 查看帮助，`start`（或 `launch`）启动，`restart` 重启当前会话的游戏，`update` 检查/下载 Games.exe，`preview` 预览，`status` 查看状态，`stop` 关闭自有游戏，`exit` 退出启动器。`restart` 等待旧游戏、挂起父进程和守护清理完成后，按原参数检查更新并启动；当前会话无游戏时直接启动，清理失败则中止重启。**`cn` 一次性显示此前日志的中文翻译，后续日志仍使用英文。** 输入时显示候选，Tab / Shift+Tab 向前/向后循环补全，上下键调用输入历史，Backspace 修改输入；旧编号 1/2/3/0 仍可使用。**Ctrl+Z 主动关闭游戏并保留终端**；`exit`、Esc、Ctrl+C 或直接关闭 Rust 窗口只退出可见启动器，游戏继续运行。`--menu` 只打开命令终端，`--launch` 保留无交互终端的命令行启动方式。
 
-运行日志固定为中文一行、英文一行，中文在上，每条日志上下各有 `================` 分隔线；Tab 只切换菜单语言，不改变日志格式。底层系统错误、路径和参数保留原始内容，其中的换行与控制字符会转义，保持每条日志恰好两行正文。
+运行日志每条只输出一行英文，包含序号和 INFO/ERROR 级别，不再使用双语分隔块。启动时输出 Endfield.exe 和实际选用的 Games.exe 的完整路径、四段 PE 文件版本；Endfield.exe 的文件版本反映引擎版本，不等同于游戏内容版本。`cn` 按原顺序批量显示当前会话保留的中文日志，不联网翻译、不重复收录翻译内容；历史最多保留 4096 条、4 MiB 文本，超出时提示较早记录已省略。底层系统错误、路径和参数保留原始内容，换行与控制字符会转义。滚轮交由控制台宿主管理；独立传统控制台会扩展至 20000 行缓冲，终端宿主使用自己的滚动历史。
 
 启动前优先查找本地原版 Games.exe，验证官方签名并读取文件版本，与官方接口版本匹配就直接使用。没有合适本地文件时，从官方完整 ZIP 只提取 Games.exe，写入独立缓存。随后创建它的挂起进程，再通过 Windows 父进程属性启动 Endfield；主线程不会恢复，游戏退出后只清理工具自有父进程。
 
@@ -55,13 +55,23 @@ Windows 构建使用 MSVC 工具链。实际启动器 EXE 要求管理员权限�
 
 测试游戏前需正常退出 IDA/REA 分析工作线程：第一次验证曾遇到“检测到不兼容程序 ida”。这属于独立的兼容性提示，本工具不修改该检查。
 
+## GitHub 自动预发布
+
+[Windows build and prerelease](.github/workflows/prerelease.yml) 在推送 `main` 或手动运行时构建 Windows x64；PR 运行同样的检查和构建但不发布。依次检查格式、Clippy、普通库测试、release 构建、x64 PE 与管理员 manifest，再打包。CI 不启动官方游戏或启动器，依赖版本由 Cargo.lock 锁定。
+
+`main` 上成功构建后创建独立预发布标签 `pre-v<版本>-<运行 ID>.<尝试次数>`，附件包含 EXE、便携 ZIP、`SHA256SUMS.txt` 和 `build-info.json`；不会设为正式 Latest。ZIP 仅包含 Rust EXE、使用说明和构建信息，不含官方 Games.exe、游戏文件、缓存或本机证据。每次重新运行使用新标签，已有发布不覆盖。
+
+工作流内置 `GITHUB_TOKEN` 即可发布，只有发布任务申请 `contents: write`，无需额外配置 PAT。可以从仓库 [Actions 页面](https://github.com/NatsumiXD/zmd-rust-launcher/actions/workflows/prerelease.yml) 选择 **Run workflow → main** 手动触发，在 [Releases 页面](https://github.com/NatsumiXD/zmd-rust-launcher/releases) 下载结果。手动选择其他分支只构建，不发布。
+
+打包逻辑为 [Package-Release.ps1](tools/Package-Release.ps1)，只读取已构建 EXE 并校验 manifest，不执行 EXE。发布使用 [GitHub CLI release create](https://cli.github.com/manual/gh_release_create) 的 prerelease 和附件上传功能；构建失败或校验失败不会进入发布任务。
+
 ## 分析与证据
 
 Git 仓库保留源码、说明文档和复现脚本；官方二进制、编译产物、下载缓存、原始 REA JSON 和本机测试记录由 `.gitignore` 排除。报告中的原始证据文件链接仅在保留这些文件的研究工作区中可用。
 
 - [最新 Games.exe 的公开接口、提取与验证](analysis/games-acquisition.md)：已验证直接获取官方 ZIP 并只提取签名 Games.exe，无需运行安装器；获取脚本为 [Get-LatestGames.ps1](tools/Get-LatestGames.ps1)。
 - [实现原理与完整使用流程](IMPLEMENTATION.zh-CN.md)
-- [输入式菜单、快捷键和本轮验证](analysis/menu-control.md)
+- [命令终端、中文日志回放、滚轮修复及验证](analysis/menu-control.md)
 - [官方启动器如何更新终末地游戏本体](analysis/endfield-game-update.md)：独立游戏版本接口、分卷下载、校验、补丁调度与尚未恢复的边界。
 - [Games.exe 行为与开源替代可行性](analysis/games-open-source-feasibility.md)
 - [界面、状态与桥接契约](analysis/games-resources.md)
@@ -72,4 +82,4 @@ Git 仓库保留源码、说明文档和复现脚本；官方二进制、编译�
 - [PE 与历史启动记录](analysis/historical-launch.md)
 - [REA 原始证据](rea-evidence.json)，补充聚焦证据位于 `analysis/*-evidence.json`。
 
-自动获取功能此前通过 24 项普通测试和 1 项真实进程探针，并实测 Rust 首次下载、本地复用、缓存无更新和离线模式。当前版本通过 27 项普通测试；工作区进程探针覆盖运行中菜单、Tab 切换、Ctrl+Z 关闭与进程清理，另有双语日志格式和控制字符换行检查。新版未再次启动真实游戏；此前同一官方 Games.exe 的启动方式已由用户确认进入游戏画面。边界与记录见 [Rust 集成记录](analysis/rust-integration.md) 和 [菜单记录](analysis/menu-control.md)。
+自动获取功能此前通过 24 项普通测试和 1 项真实进程探针，并实测 Rust 首次下载、本地复用、缓存无更新和离线模式。当前版本通过 33 项普通测试；工作区控制台探针覆盖命令输入、运行中执行 cn、Ctrl+Z、原生滚轮和模式恢复，退出探针覆盖窗口关闭及强制结束可见启动器后游戏继续运行、守护清理。新版未再次启动真实游戏；此前同一官方 Games.exe 的启动方式已由用户确认进入游戏画面。边界与记录见 [Rust 集成记录](analysis/rust-integration.md) 和 [终端记录](analysis/menu-control.md)。
