@@ -65,7 +65,9 @@ jobs:
             artifacts/ci-release/endfield-direct-launch.exe
             artifacts/ci-release/*.zip
             artifacts/ci-release/SHA256SUMS.txt
+            artifacts/ci-release/MD5SUMS.txt
             artifacts/ci-release/build-info.json
+            artifacts/ci-release/release-notes.md
           if-no-files-found: error
           retention-days: 14
 
@@ -86,7 +88,9 @@ jobs:
 
       - name: Verify transferred files
         working-directory: dist
-        run: sha256sum --check SHA256SUMS.txt
+        run: |
+          sha256sum --check SHA256SUMS.txt
+          md5sum --check MD5SUMS.txt
 
       - name: Publish prerelease with all assets
         env:
@@ -97,23 +101,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > release-notes.md <<EOF
-          Automated Windows x64 prerelease of Endfield Launcher ${RELEASE_VERSION}.
-
-          Commit: ${GITHUB_SHA}
-          Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-
-          Download the EXE directly or extract the portable ZIP. Administrator permission is required.
-          Official Games.exe and game files are not bundled. The launcher checks/reuses or downloads official Games.exe when needed.
-          Use --game to specify your Endfield.exe path. Type help in the command console for start, restart, cn and other commands.
-          SHA256SUMS.txt contains checksums for the EXE, ZIP and build metadata.
-
-          自动构建的 Windows x64 预发布版本，需要管理员权限。可直接下载 EXE 或解压便携 ZIP。
-          不包含官方 Games.exe 或游戏文件；启动器会按需检查、复用或获取官方 Games.exe。
-          使用 --game 指定终末地主程序位置；命令终端输入 help 查看启动、重启等指令。
-          EOF
           gh release create "$RELEASE_TAG" \
-            dist/endfield-direct-launch.exe dist/*.zip dist/SHA256SUMS.txt dist/build-info.json \
+            dist/endfield-direct-launch.exe dist/*.zip dist/SHA256SUMS.txt dist/MD5SUMS.txt dist/build-info.json \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Endfield Launcher ${RELEASE_VERSION} (${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT})" \
-            --notes-file release-notes.md --prerelease --latest=false
+            --notes-file dist/release-notes.md --prerelease --latest=false

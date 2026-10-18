@@ -74,18 +74,64 @@ $taskBuildInfo = [ordered]@{
     rustc = $taskRustVersion
     execution_level = 'requireAdministrator'
     exe_sha256 = (Get-FileHash -LiteralPath $taskReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    exe_md5 = (Get-FileHash -LiteralPath $taskReleaseExe -Algorithm MD5).Hash.ToLowerInvariant()
 }
 $taskBuildInfoPath = Join-Path $taskOutput 'build-info.json'
 [IO.File]::WriteAllText($taskBuildInfoPath, ($taskBuildInfo | ConvertTo-Json) + "`n", $taskEncoding)
 Copy-Item -LiteralPath $taskBuildInfoPath -Destination (Join-Path $taskStaging 'build-info.json')
 $taskZipName = "endfield-direct-launch-v$taskVersion-windows-x86_64.zip"
 Compress-Archive -Path (Join-Path $taskStaging '*') -DestinationPath (Join-Path $taskOutput $taskZipName) -CompressionLevel Optimal
-$taskChecksums = foreach ($taskName in @($taskExeName, $taskZipName, 'build-info.json')) {
-    $taskHash = (Get-FileHash -LiteralPath (Join-Path $taskOutput $taskName) -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$taskHash  $taskName"
+$taskPayloadNames = @($taskExeName, $taskZipName, 'build-info.json')
+foreach ($taskAlgorithm in @('SHA256', 'MD5')) {
+    $taskChecksums = foreach ($taskName in $taskPayloadNames) {
+        $taskHash = (Get-FileHash -LiteralPath (Join-Path $taskOutput $taskName) -Algorithm $taskAlgorithm).Hash.ToLowerInvariant()
+        "$taskHash  $taskName"
+    }
+    [IO.File]::WriteAllText((Join-Path $taskOutput "${taskAlgorithm}SUMS.txt"), ($taskChecksums -join "`n") + "`n", $taskEncoding)
 }
-[IO.File]::WriteAllText((Join-Path $taskOutput 'SHA256SUMS.txt'), ($taskChecksums -join "`n") + "`n", $taskEncoding)
 $taskTag = "pre-v$taskVersion-$BuildId"
+$taskDescriptions = [ordered]@{
+    $taskExeName = '独立启动器程序（Windows x64），需要管理员权限；适合直接下载运行。'
+    $taskZipName = '便携压缩包，包含同一启动器 EXE、使用说明和构建信息；解压后运行 EXE。'
+    'build-info.json' = '构建信息：源码提交、编译器、目标平台、管理员权限声明，以及 EXE 的 SHA-256 和 MD5。'
+    'SHA256SUMS.txt' = 'EXE、便携 ZIP 和构建信息的 SHA-256 校验清单。'
+    'MD5SUMS.txt' = 'EXE、便携 ZIP 和构建信息的 MD5 校验清单。'
+}
+$taskRepoUrl = if ($env:GITHUB_SERVER_URL -and $env:GITHUB_REPOSITORY) {
+    "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
+} else {
+    'https://github.com/NatsumiXD/zmd-rust-launcher'
+}
+$taskRunId = ($BuildId -split '\.')[0]
+$taskNotes = @(
+    "## 终末地 Rust 启动器 $taskVersion 预发布版"
+    ''
+    'Windows x64 自动构建，需要管理员权限。可直接下载 EXE，或下载便携 ZIP 并解压后运行。'
+    '不包含官方 Games.exe 或游戏文件；启动器会按需检查、复用或获取官方 Games.exe。'
+    '使用 --game 指定终末地主程序位置，命令终端输入 help 查看 start、restart、cn 等指令。'
+    ''
+    ('源码提交：[`{0}`]({1}/commit/{0})' -f $CommitSha, $taskRepoUrl)
+    ('构建记录：[GitHub Actions]({0}/actions/runs/{1})' -f $taskRepoUrl, $taskRunId)
+    ''
+    '### 附件中文说明'
+    ''
+    '| 文件 | 说明 |'
+    '| --- | --- |'
+)
+foreach ($taskEntry in $taskDescriptions.GetEnumerator()) {
+    $taskAssetUrl = "$taskRepoUrl/releases/download/$taskTag/$([Uri]::EscapeDataString($taskEntry.Key))"
+    $taskNotes += ('| [{0}]({1}) | {2} |' -f $taskEntry.Key, $taskAssetUrl, $taskEntry.Value)
+}
+foreach ($taskAlgorithm in @('SHA256', 'MD5')) {
+    $taskHeading = if ($taskAlgorithm -eq 'SHA256') { 'SHA-256' } else { 'MD5' }
+    $taskNotes += @('', "### $taskHeading", '', '```text')
+    foreach ($taskName in $taskDescriptions.Keys) {
+        $taskHash = (Get-FileHash -LiteralPath (Join-Path $taskOutput $taskName) -Algorithm $taskAlgorithm).Hash.ToLowerInvariant()
+        $taskNotes += "$taskHash  $taskName"
+    }
+    $taskNotes += '```'
+}
+[IO.File]::WriteAllText((Join-Path $taskOutput 'release-notes.md'), ($taskNotes -join "`n") + "`n", $taskEncoding)
 if ($env:GITHUB_OUTPUT) {
     Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$taskVersion`ntag=$taskTag" -Encoding utf8
 }

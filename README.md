@@ -59,7 +59,7 @@ Windows 构建使用 MSVC 工具链。实际启动器 EXE 要求管理员权限�
 
 [Windows build and prerelease](.github/workflows/prerelease.yml) 在推送 `main` 或手动运行时构建 Windows x64；PR 运行同样的检查和构建但不发布。依次检查格式、Clippy、普通库测试、release 构建、x64 PE 与管理员 manifest，再打包。CI 不启动官方游戏或启动器，依赖版本由 Cargo.lock 锁定。
 
-`main` 上成功构建后创建独立预发布标签 `pre-v<版本>-<运行 ID>.<尝试次数>`，附件包含 EXE、便携 ZIP、`SHA256SUMS.txt` 和 `build-info.json`；不会设为正式 Latest。ZIP 仅包含 Rust EXE、使用说明和构建信息，不含官方 Games.exe、游戏文件、缓存或本机证据。每次重新运行使用新标签，已有发布不覆盖。
+`main` 上成功构建后创建独立预发布标签 `pre-v<版本>-<运行 ID>.<尝试次数>`，附件包含 EXE、便携 ZIP、`SHA256SUMS.txt`、`MD5SUMS.txt` 和 `build-info.json`；不会设为正式 Latest。发布描述自动生成各附件的中文用途说明，以及全部五个附件的 SHA-256、MD5；两个校验清单各自校验 EXE、ZIP 和构建信息，发布前在云端再次核对。ZIP 仅包含 Rust EXE、使用说明和构建信息，不含官方 Games.exe、游戏文件、缓存或本机证据。每次重新运行使用新标签，已有发布不覆盖。
 
 工作流内置 `GITHUB_TOKEN` 即可发布，只有发布任务申请 `contents: write`，无需额外配置 PAT。可以从仓库 [Actions 页面](https://github.com/NatsumiXD/zmd-rust-launcher/actions/workflows/prerelease.yml) 选择 **Run workflow → main** 手动触发，在 [Releases 页面](https://github.com/NatsumiXD/zmd-rust-launcher/releases) 下载结果。手动选择其他分支只构建，不发布。
 

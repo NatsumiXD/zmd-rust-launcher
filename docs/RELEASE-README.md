@@ -25,6 +25,6 @@ Closing or exiting the visible launcher keeps the game running.
 输入 `start` 启动、`restart` 重启、`stop` 或 Ctrl+Z 关闭自有游戏；`cn` 回放中文日志，`help` 查看帮助。
 Tab / Shift+Tab 循环补全，Enter 执行。直接关闭或退出可见启动器时游戏继续运行。
 
-`build-info.json` records the source commit, build toolchain and EXE SHA-256.
-The release also provides `SHA256SUMS.txt` for checking downloaded files.
-构建信息记录源码提交、工具链及 EXE 哈希；发布页提供 SHA-256 校验文件。
+`build-info.json` records the source commit, build toolchain and EXE SHA-256/MD5.
+The release provides `SHA256SUMS.txt`, `MD5SUMS.txt`, and checksums in its description.
+构建信息记录源码提交、工具链及 EXE 哈希；发布页直接展示各附件的 SHA-256、MD5 和中文文件说明，并提供两种校验清单。
