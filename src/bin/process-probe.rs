@@ -118,9 +118,9 @@ mod probe {
 
 fn main() -> std::process::ExitCode {
     #[cfg(windows)]
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new("--internal-parent-guardian"))
-    {
+    if std::env::args_os().nth(1).is_some_and(|arg| {
+        arg == "--internal-parent-guardian" || arg == "--internal-launcher-update"
+    }) {
         return endfield_direct_launch::entrypoint();
     }
     #[cfg(windows)]

@@ -657,6 +657,127 @@ fn inheritable_duplicate(handle: Handle) -> Result<OwnedHandle, String> {
     Ok(OwnedHandle(duplicate))
 }
 
+pub(crate) struct UpdateWorker {
+    process: OwnedHandle,
+}
+impl UpdateWorker {
+    pub(crate) fn is_running(&self) -> bool {
+        unsafe { WaitForSingleObject(self.process.0, 0) == 258 }
+    }
+}
+
+pub(crate) struct UpdateOwner {
+    process: OwnedHandle,
+    ready: OwnedHandle,
+}
+impl UpdateOwner {
+    pub(crate) fn inherited(args: &[OsString]) -> Result<Self, String> {
+        if args.len() != 2 {
+            return Err("invalid update-worker handle arguments".into());
+        }
+        let mut handles = Vec::new();
+        for arg in args {
+            let value = arg
+                .to_str()
+                .and_then(|text| text.parse::<usize>().ok())
+                .filter(|value| *value != 0 && *value != usize::MAX)
+                .ok_or("invalid update-worker handle")?;
+            let mut flags = 0;
+            if unsafe { GetHandleInformation(value as Handle, &mut flags) } == 0 || flags & 1 == 0 {
+                return Err("update worker requires inherited handles".into());
+            }
+            handles.push(value as Handle);
+        }
+        if handles[0] == handles[1]
+            || unsafe { GetProcessId(handles[0]) } == 0
+            || unsafe { GetProcessId(handles[0]) } == std::process::id()
+        {
+            return Err("invalid launcher owner identity".into());
+        }
+        Ok(Self {
+            process: OwnedHandle(handles[0]),
+            ready: OwnedHandle(handles[1]),
+        })
+    }
+    pub(crate) fn acknowledge(&self) -> Result<(), String> {
+        if unsafe { SetEvent(self.ready.0) } == 0 {
+            return Err("update readiness acknowledgement failed".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn exited(&self, timeout: u32) -> Result<bool, String> {
+        match unsafe { WaitForSingleObject(self.process.0, timeout) } {
+            0 => Ok(true),
+            258 => Ok(false),
+            _ => Err("cannot wait for launcher owner exit".into()),
+        }
+    }
+}
+
+pub(crate) fn spawn_update_worker(executable: &Path) -> Result<UpdateWorker, String> {
+    spawn_update_worker_for_owner(executable, unsafe { GetCurrentProcess() })
+}
+fn spawn_update_worker_for_owner(executable: &Path, owner: Handle) -> Result<UpdateWorker, String> {
+    let ready = unsafe { CreateEventW(null(), 1, 0, null()) };
+    if ready.is_null() {
+        return Err("cannot create update readiness event".into());
+    }
+    let ready = OwnedHandle(ready);
+    let mut owner_duplicate = null::<c_void>() as Handle;
+    // The helper can query/wait for its exact owner, but cannot terminate it.
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            owner,
+            GetCurrentProcess(),
+            &mut owner_duplicate,
+            0x0010_1000,
+            1,
+            0,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "cannot inherit launcher wait handle: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let inherited = [
+        OwnedHandle(owner_duplicate),
+        inheritable_duplicate(ready.0)?,
+    ];
+    let handles: Vec<_> = inherited.iter().map(|handle| handle.0).collect();
+    let args = vec![
+        OsString::from(crate::update_worker::WORKER_FLAG),
+        (handles[0] as usize).to_string().into(),
+        (handles[1] as usize).to_string().into(),
+    ];
+    let mut attributes = AttributeList::new(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles)?;
+    let mut startup = StartupInfoExW {
+        startup: startup_info(),
+        attribute_list: attributes.as_mut_ptr(),
+    };
+    startup.startup.cb = size_of::<StartupInfoExW>() as u32;
+    let worker = create_process_impl(
+        executable,
+        executable.parent().ok_or("worker has no directory")?,
+        &args,
+        0x0800_0000 | EXTENDED_STARTUPINFO_PRESENT,
+        &startup.startup,
+        true,
+    )?;
+    if unsafe { WaitForMultipleObjects(2, [ready.0, worker.process.0].as_ptr(), 0, 10_000) } != 0 {
+        unsafe {
+            TerminateProcess(worker.process.0, 1);
+            WaitForSingleObject(worker.process.0, 3000);
+        }
+        return Err("background update worker did not acknowledge readiness".into());
+    }
+    Ok(UpdateWorker {
+        process: worker.process,
+    })
+}
+
 fn spawn_guardian(parent: &SuspendedParent, game: Handle) -> Result<OwnedHandle, String> {
     #[cfg(not(test))]
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -786,6 +907,131 @@ pub(super) fn guardian_entry(args: &[OsString]) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::os::windows::ffi::OsStringExt;
+
+    #[test]
+    #[ignore = "network and workspace-only updater-owner exit probe; build process-probe first"]
+    fn workspace_update_worker_applies_only_after_launcher_exit() {
+        use sha2::{Digest, Sha256};
+        struct Fixture(CreatedProcess);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                unsafe {
+                    TerminateProcess(self.0.process.0, 1);
+                    WaitForSingleObject(self.0.process.0, 3000);
+                }
+            }
+        }
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = root.join(format!("artifacts/update-worker-probe-{stamp}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let probe = root.join("target/debug/process-probe.exe");
+        let target = directory.join("endfield-direct-launch.exe");
+        std::fs::copy(&probe, &target).unwrap();
+        let old_bytes = std::fs::read(&target).unwrap();
+        let owner = Fixture(
+            create_process(
+                &target,
+                &directory,
+                &["--stay-alive".into()],
+                0,
+                &startup_info(),
+            )
+            .unwrap(),
+        );
+        let game_like = Fixture(
+            create_process(
+                &target,
+                &directory,
+                &["--stay-alive".into()],
+                0,
+                &startup_info(),
+            )
+            .unwrap(),
+        );
+        let helper =
+            crate::update_worker::create_layout(&target, &probe, &[], "0.0.0", "local", "local")
+                .unwrap();
+        let worker = spawn_update_worker_for_owner(&helper, owner.0.process.0).unwrap();
+        let state_path = helper.with_file_name("state.json");
+        let started = std::time::Instant::now();
+        loop {
+            let state = std::fs::read(&state_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+            if state
+                .as_ref()
+                .is_some_and(|value| value["phase"] == "staged")
+            {
+                break;
+            }
+            if started.elapsed().as_secs() > 55
+                || state
+                    .as_ref()
+                    .is_some_and(|value| value["phase"] == "error")
+            {
+                unsafe {
+                    TerminateProcess(worker.process.0, 1);
+                    WaitForSingleObject(worker.process.0, 3000);
+                }
+                panic!(
+                    "worker did not stage update: {}",
+                    std::fs::read_to_string(helper.with_file_name("events.jsonl"))
+                        .unwrap_or_default()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            old_bytes,
+            "live EXE must remain unchanged until the owner closes"
+        );
+        assert_eq!(unsafe { WaitForSingleObject(owner.0.process.0, 0) }, 258);
+        assert_eq!(
+            unsafe { WaitForSingleObject(game_like.0.process.0, 0) },
+            258
+        );
+        let receipt_path = std::fs::read_dir(directory.join("launcher-update"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("receipt.json"))
+            .find(|path| path.is_file())
+            .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
+        let backup = std::path::PathBuf::from(receipt["backup"].as_str().unwrap());
+        assert!(!backup.exists(), "backup rename is deferred too");
+        drop(owner);
+        assert_eq!(
+            unsafe { WaitForSingleObject(worker.process.0, 15_000) },
+            0,
+            "worker must finish after its exact owner exits"
+        );
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state_path).unwrap()).unwrap();
+        assert_eq!(state["phase"], "applied");
+        assert_eq!(std::fs::read(&backup).unwrap(), old_bytes);
+        let new_hash = format!("{:x}", Sha256::digest(std::fs::read(&target).unwrap()));
+        assert_eq!(receipt["new_sha256"], new_hash);
+        assert_eq!(
+            unsafe { WaitForSingleObject(game_like.0.process.0, 0) },
+            258,
+            "another loaded old image must keep running"
+        );
+        let journal = std::fs::read_to_string(helper.with_file_name("events.jsonl")).unwrap();
+        for line in journal.lines() {
+            let _: crate::logging::JournalRecord = serde_json::from_str(line).unwrap();
+        }
+        std::fs::write(root.join("analysis/update-after-exit-probe.json"), serde_json::to_vec_pretty(&serde_json::json!({
+            "tag":receipt["tag"],"download_route":receipt["download_route"],"live_exe_unchanged_until_close":true,
+            "owner_exit_applied_update":true,"other_loaded_process_kept_running":true,"backup_matches_original":true,
+            "bilingual_journal_valid":true,"downloaded_exe_executed":false,"target":target,"sha256":new_hash
+        })).unwrap()).unwrap();
+    }
 
     #[test]
     #[ignore = "isolated console host; run via workspace_console_ctrl_c_and_menu_probe"]

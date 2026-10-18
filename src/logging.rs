@@ -82,6 +82,28 @@ impl History {
 }
 
 static HISTORY: Mutex<History> = Mutex::new(History::new());
+static JOURNAL: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct JournalRecord {
+    pub chinese: String,
+    pub english: String,
+    pub error: bool,
+}
+pub(crate) fn attach_journal(path: &std::path::Path) -> io::Result<()> {
+    *JOURNAL.lock().unwrap_or_else(|value| value.into_inner()) = Some(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?,
+    );
+    Ok(())
+}
+impl JournalRecord {
+    pub(crate) fn replay(self) {
+        emit(self.chinese, self.english, self.error);
+    }
+}
 
 fn single_line(value: impl Display) -> String {
     let mut output = String::new();
@@ -99,7 +121,23 @@ fn emit(chinese: impl Display, english: impl Display, error: bool) {
     let mut history = HISTORY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let line = history.push(chinese, english, error);
+    let record = JournalRecord {
+        chinese: chinese.to_string(),
+        english: english.to_string(),
+        error,
+    };
+    let line = history.push(&record.chinese, &record.english, error);
+    if let Some(file) = JOURNAL
+        .lock()
+        .unwrap_or_else(|value| value.into_inner())
+        .as_mut()
+    {
+        if let Ok(mut bytes) = serde_json::to_vec(&record) {
+            bytes.push(b'\n');
+            let _ = file.write_all(&bytes).and_then(|_| file.flush());
+        }
+        return;
+    }
     if error {
         let mut output = io::stderr().lock();
         let _ = output.write_all(line.as_bytes());

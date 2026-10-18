@@ -50,8 +50,8 @@ fn decode_key(key: KEY_EVENT_RECORD) -> Option<Key> {
 }
 
 const COMMANDS: &[&str] = &[
-    "help", "start", "launch", "restart", "update", "preview", "status", "stop", "cn", "exit",
-    "quit",
+    "help", "start", "launch", "restart", "update", "lud", "preview", "status", "stop", "cn",
+    "exit", "quit",
 ];
 const PROMPT: &str = "endfield> ";
 
@@ -61,6 +61,7 @@ enum Command {
     Start,
     Restart,
     Update,
+    LauncherUpdate,
     Preview,
     Status,
     Stop,
@@ -75,6 +76,7 @@ fn parse_command(input: &str) -> Result<Option<Command>, String> {
         "start" | "launch" | "1" => Ok(Some(Command::Start)),
         "restart" => Ok(Some(Command::Restart)),
         "update" | "2" => Ok(Some(Command::Update)),
+        "lud" => Ok(Some(Command::LauncherUpdate)),
         "preview" | "3" => Ok(Some(Command::Preview)),
         "status" => Ok(Some(Command::Status)),
         "stop" => Ok(Some(Command::Stop)),
@@ -686,6 +688,7 @@ fn help() {
     println!("start    Check Games.exe updates and start the game (alias: 1)");
     println!("restart  Stop this session's game, check updates and start again");
     println!("update   Check/download Games.exe only (alias: 2)");
+    println!("lud      Check/download Rust launcher updates; install after launcher exit");
     println!("preview  Preview launch without network/processes (alias: 3)");
     println!("status   Show this session's game status");
     println!("stop     Stop this session's game (shortcut: Ctrl+Z)");
@@ -795,6 +798,25 @@ fn stop(session: &mut Option<crate::Session>) -> Result<(), String> {
     Ok(())
 }
 
+fn request_launcher_update(options: &Options, job: &mut Option<crate::update_worker::UpdateJob>) {
+    if let Err(error) = crate::update_worker::UpdateJob::start_or_request(options, job) {
+        crate::logging::error(
+            format!("启动器后台更新检查未能启动：{error}"),
+            format!("Could not start background launcher update check: {error}"),
+        );
+    }
+}
+pub(super) fn automatic_launcher_update(
+    options: &Options,
+    job: &mut Option<crate::update_worker::UpdateJob>,
+) {
+    // Console/process fixture tests never implicitly make network requests.
+    #[cfg(not(test))]
+    request_launcher_update(options, job);
+    #[cfg(test)]
+    let _ = (options, job);
+}
+
 pub(super) fn run(options: Options, auto_start: bool) -> Result<bool, String> {
     drop(Console::open()?);
     prepare_scrollback();
@@ -809,6 +831,7 @@ fn run_inner(
     auto_start: bool,
     session: &mut Option<crate::Session>,
 ) -> Result<bool, String> {
+    let mut update_job: Option<crate::update_worker::UpdateJob> = None;
     if auto_start {
         crate::logging::info(
             "正在检查 Games.exe 并启动游戏。",
@@ -827,6 +850,7 @@ fn run_inner(
                     ),
                 );
                 *session = Some(started);
+                automatic_launcher_update(&options, &mut update_job);
             }
             Ok(crate::Outcome::Finished(_)) => {}
             Err(error) => crate::logging::error(
@@ -841,6 +865,26 @@ fn run_inner(
         let console = Console::open()?;
         prompt(&state).map_err(|error| error.to_string())?;
         let command = loop {
+            if let Some(job) = update_job.as_mut() {
+                match job.poll() {
+                    Ok(records) if !records.is_empty() => {
+                        finish_input(&state).map_err(|error| error.to_string())?;
+                        for record in records {
+                            record.replay();
+                        }
+                        prompt(&state).map_err(|error| error.to_string())?;
+                    }
+                    Err(error) => {
+                        finish_input(&state).map_err(|error| error.to_string())?;
+                        crate::logging::error(
+                            format!("读取后台更新日志失败：{error}"),
+                            format!("Background update log read failed: {error}"),
+                        );
+                        prompt(&state).map_err(|error| error.to_string())?;
+                    }
+                    _ => {}
+                }
+            }
             if session
                 .as_ref()
                 .map(|active| active.child.try_wait())
@@ -900,6 +944,10 @@ fn run_inner(
                 crate::logging::print_chinese_history().map_err(|error| error.to_string())?;
                 continue;
             }
+            Command::LauncherUpdate => {
+                request_launcher_update(&options, &mut update_job);
+                continue;
+            }
             Command::Stop => {
                 stop(session)?;
                 continue;
@@ -944,7 +992,10 @@ fn run_inner(
         };
         selected_options.wait = true;
         match crate::execute(selected_options) {
-            Ok(crate::Outcome::Started(started)) => *session = Some(started),
+            Ok(crate::Outcome::Started(started)) => {
+                *session = Some(started);
+                automatic_launcher_update(&options, &mut update_job);
+            }
             Ok(crate::Outcome::Finished(true)) => {
                 crate::logging::info("操作已结束。", "Operation finished.")
             }
@@ -959,13 +1010,29 @@ fn run_inner(
         }
     }
 }
-pub(super) fn wait_for_session(session: &crate::Session) -> Result<bool, String> {
+pub(super) fn wait_for_session(
+    session: &crate::Session,
+    job: &mut Option<crate::update_worker::UpdateJob>,
+) -> Result<bool, String> {
     // Redirected/non-console callers retain ordinary process waiting.
     let Ok(console) = Console::open() else {
         return session.finish();
     };
     println!("Ctrl+Z: stop game. Ctrl+C / Esc: exit launcher; game keeps running.");
     loop {
+        if let Some(job) = job.as_mut() {
+            match job.poll() {
+                Ok(records) => {
+                    for record in records {
+                        record.replay();
+                    }
+                }
+                Err(error) => crate::logging::error(
+                    format!("读取后台更新日志失败：{error}"),
+                    format!("Background update log read failed: {error}"),
+                ),
+            }
+        }
         if session.child.try_wait()?.is_some() {
             return session.finish();
         }
@@ -996,6 +1063,10 @@ mod tests {
         assert_eq!(enter(&mut state, "launch"), Ok(Some(Command::Start)));
         assert_eq!(enter(&mut state, " RESTART "), Ok(Some(Command::Restart)));
         assert_eq!(enter(&mut state, "2"), Ok(Some(Command::Update)));
+        assert_eq!(
+            enter(&mut state, " LUD "),
+            Ok(Some(Command::LauncherUpdate))
+        );
         assert_eq!(enter(&mut state, "preview"), Ok(Some(Command::Preview)));
         assert_eq!(enter(&mut state, "status"), Ok(Some(Command::Status)));
         assert_eq!(enter(&mut state, "stop"), Ok(Some(Command::Stop)));

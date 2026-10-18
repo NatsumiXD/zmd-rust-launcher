@@ -108,7 +108,7 @@ $taskNotes = @(
     ''
     'Windows x64 自动构建，需要管理员权限。可直接下载 EXE，或下载便携 ZIP 并解压后运行。'
     '不包含官方 Games.exe 或游戏文件；启动器会按需检查、复用或获取官方 Games.exe。'
-    '使用 --game 指定终末地主程序位置，命令终端输入 help 查看 start、restart、cn 等指令。'
+    '使用 --game 指定终末地主程序位置，命令终端输入 help 查看 start、restart、lud、cn 等指令。每次启动游戏后自动检查 Rust 更新，lud 可手动检查；先测速官方与镜像，再下载、校验并暂存，关闭启动器后才应用，游戏继续运行。'
     ''
     ('源码提交：[`{0}`]({1}/commit/{0})' -f $CommitSha, $taskRepoUrl)
     ('构建记录：[GitHub Actions]({0}/actions/runs/{1})' -f $taskRepoUrl, $taskRunId)

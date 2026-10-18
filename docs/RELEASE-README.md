@@ -22,8 +22,14 @@ Type `start` to launch, `restart` to restart, `stop` or Ctrl+Z to stop the owned
 Tab / Shift+Tab cycle completion candidates; Enter runs the command.
 Closing or exiting the visible launcher keeps the game running.
 
+Every game launch requests a background Rust-launcher update check; `lud` requests another check.
+Official/mirror routes are benchmarked before downloading. Verified updates are staged and applied only after this launcher closes.
+The background worker can finish downloading after the window closes; the game keeps running and the launcher is not reopened automatically.
+
 输入 `start` 启动、`restart` 重启、`stop` 或 Ctrl+Z 关闭自有游戏；`cn` 回放中文日志，`help` 查看帮助。
 Tab / Shift+Tab 循环补全，Enter 执行。直接关闭或退出可见启动器时游戏继续运行。
+
+每次启动游戏后自动在后台检查 Rust 启动器更新，`lud` 可手动检查（`update` 仍只更新 Games.exe）。先测速官方与镜像，再下载、校验并暂存；启动器关闭后才应用，保留旧版备份，不关闭游戏、不自动重开窗口。提前关闭窗口时，后台仍会继续完成下载和更新。
 
 `build-info.json` records the source commit, build toolchain and EXE SHA-256/MD5.
 The release provides `SHA256SUMS.txt`, `MD5SUMS.txt`, and checksums in its description.

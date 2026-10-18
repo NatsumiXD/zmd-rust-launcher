@@ -9,6 +9,9 @@ mod logging;
 mod menu;
 #[cfg(windows)]
 mod native_acquire;
+mod self_update;
+#[cfg(windows)]
+mod update_worker;
 #[cfg(windows)]
 mod windows;
 
@@ -16,7 +19,9 @@ const DEFAULT_GAME: &str = r"D:\yj\Hypergryph Launcher\games\Arknights Endfield\
 const HELP: &str = "endfield-direct-launch [OPTIONS] [-- EXTRA_GAME_ARGS...]
 
 Default: print English startup logs, start the game, then open the command console.
-Commands: start, restart, update, preview, status, stop, cn, help, exit.
+Commands: start, restart, update, lud, preview, status, stop, cn, help, exit.
+lud checks/benchmarks/downloads Rust launcher updates; applies after launcher exit.
+Every successful game launch also requests this background update check.
 restart stops this session's game, waits for cleanup, then checks updates and starts again.
 cn prints earlier session logs in Chinese; future logs remain English.
 Candidates appear as you type; Tab / Shift+Tab cycle completions.
@@ -403,12 +408,14 @@ impl Session {
 fn run(options: Options) -> Result<bool, String> {
     #[cfg(windows)]
     let wait = options.wait || !options.direct;
-    match execute(options)? {
+    match execute(options.clone())? {
         Outcome::Finished(success) => Ok(success),
         #[cfg(windows)]
         Outcome::Started(session) => {
+            let mut update_job = None;
+            menu::automatic_launcher_update(&options, &mut update_job);
             if wait {
-                menu::wait_for_session(&session)
+                menu::wait_for_session(&session, &mut update_job)
             } else {
                 Ok(true)
             }
@@ -658,6 +665,17 @@ fn execute(mut options: Options) -> Result<Outcome, String> {
 
 pub fn entrypoint() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    #[cfg(windows)]
+    if args
+        .first()
+        .is_some_and(|arg| arg == update_worker::WORKER_FLAG)
+    {
+        return if update_worker::worker_entry(&args[1..]).is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     #[cfg(windows)]
     if args
         .first()

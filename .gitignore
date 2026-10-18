@@ -2,6 +2,7 @@
 /target/
 /artifacts/
 **/endfield-cache/
+**/launcher-update/
 
 # Compiled programs and third-party binaries (including official Games.exe)
 *.exe

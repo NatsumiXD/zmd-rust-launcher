@@ -42,7 +42,7 @@ fn success(value: i32) -> Result<(), String> {
 }
 
 pub struct NativeBackend;
-struct Response {
+pub(crate) struct Response {
     request: Internet,
     _connection: Internet,
     _session: Internet,
@@ -50,7 +50,42 @@ struct Response {
 }
 impl Response {
     fn get(host: &str, path: &str) -> Result<Self, String> {
-        let agent = wide("EndfieldDirectLaunch/0.2");
+        Self::request(host, path, false, false, false)
+    }
+    pub(crate) fn github(url: &str) -> Result<Self, String> {
+        Self::github_request(url, false)
+    }
+    pub(crate) fn github_probe(url: &str) -> Result<Self, String> {
+        Self::github_request(url, true)
+    }
+    fn github_request(url: &str, probe: bool) -> Result<Self, String> {
+        let (host, path) = crate::self_update::github_url(url)?;
+        match Self::request(host, path, true, false, probe) {
+            Err(error)
+                if error.starts_with("WinHTTP:") || error.contains("API rate limit exceeded") =>
+            {
+                crate::logging::info(
+                    "系统代理路径无法连接 GitHub 或已触发限流，尝试直接 HTTPS 连接。",
+                    "The system proxy route could not reach GitHub or is rate limited; trying a direct HTTPS connection.",
+                );
+                Self::request(host, path, true, true, probe).map_err(|direct| {
+                    format!(
+                        "GitHub system route failed: {error}; direct connection failed: {direct}"
+                    )
+                })
+            }
+            result => result,
+        }
+    }
+    fn request(
+        host: &str,
+        path: &str,
+        github: bool,
+        direct: bool,
+        probe: bool,
+    ) -> Result<Self, String> {
+        let started = Instant::now();
+        let agent = wide(concat!("EndfieldDirectLaunch/", env!("CARGO_PKG_VERSION")));
         let host = wide(host);
         let path = wide(path);
         let method = wide("GET");
@@ -59,12 +94,20 @@ impl Response {
         unsafe {
             let session = checked(WinHttpOpen(
                 agent.as_ptr(),
-                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                if direct {
+                    WINHTTP_ACCESS_TYPE_NO_PROXY
+                } else {
+                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+                },
                 null(),
                 null(),
                 0,
             ))?;
-            success(WinHttpSetTimeouts(session.0, 5000, 10000, 10000, 30000))?;
+            if probe {
+                success(WinHttpSetTimeouts(session.0, 1000, 2500, 2500, 2500))?;
+            } else {
+                success(WinHttpSetTimeouts(session.0, 5000, 10000, 10000, 30000))?;
+            }
             let connection = checked(WinHttpConnect(session.0, host.as_ptr(), 443, 0))?;
             let request = checked(WinHttpOpenRequest(
                 connection.0,
@@ -75,7 +118,11 @@ impl Response {
                 null(),
                 WINHTTP_FLAG_SECURE,
             ))?;
-            let redirects = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+            let redirects = if github {
+                WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP
+            } else {
+                WINHTTP_OPTION_REDIRECT_POLICY_NEVER
+            };
             success(WinHttpSetOption(
                 request.0,
                 WINHTTP_OPTION_REDIRECT_POLICY,
@@ -102,13 +149,49 @@ impl Response {
                 null_mut(),
             ))?;
             if status != 200 {
-                return Err(format!("official service returned HTTP {status}"));
+                if github {
+                    let mut buffer = [0u8; 2048];
+                    let mut count = 0;
+                    if WinHttpReadData(
+                        request.0,
+                        buffer.as_mut_ptr().cast(),
+                        buffer.len() as u32,
+                        &mut count,
+                    ) != 0
+                        && let Ok(value) =
+                            serde_json::from_slice::<serde_json::Value>(&buffer[..count as usize])
+                        && let Some(message) = value.get("message").and_then(|value| value.as_str())
+                    {
+                        return Err(format!("GitHub HTTP {status}: {message}"));
+                    }
+                }
+                return Err(format!("HTTPS service returned HTTP {status}"));
+            }
+            if github {
+                let mut final_url = vec![0u16; 16_384];
+                let mut bytes = (final_url.len() * 2) as u32;
+                if WinHttpQueryOption(
+                    request.0,
+                    WINHTTP_OPTION_URL,
+                    final_url.as_mut_ptr().cast(),
+                    &mut bytes,
+                ) == 0
+                {
+                    return Err("cannot verify final GitHub download URL".into());
+                }
+                let length = final_url
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .unwrap_or(final_url.len());
+                let url = String::from_utf16(&final_url[..length])
+                    .map_err(|_| "invalid final GitHub URL")?;
+                crate::self_update::github_url(&url)?;
             }
             Ok(Self {
                 request,
                 _connection: connection,
                 _session: session,
-                deadline: Instant::now() + Duration::from_secs(180),
+                deadline: started + Duration::from_secs(if probe { 10 } else { 180 }),
             })
         }
     }
@@ -118,7 +201,7 @@ impl Read for Response {
         if Instant::now() > self.deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "official download deadline exceeded",
+                "HTTPS response read deadline exceeded",
             ));
         }
         if buffer.is_empty() {
