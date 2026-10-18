@@ -1,3 +1,4 @@
+use crate::language::{self, Language, text};
 use crate::{Action, Options};
 use std::io::{self, Write};
 use windows_sys::Win32::Foundation::HANDLE;
@@ -51,8 +52,9 @@ fn decode_key(key: KEY_EVENT_RECORD) -> Option<Key> {
 
 const COMMANDS: &[&str] = &[
     "help", "start", "launch", "restart", "update", "lud", "preview", "status", "stop", "cn",
-    "exit", "quit",
+    "language", "exit", "quit",
 ];
+const LANGUAGE_COMMANDS: &[&str] = &["language cn", "language en"];
 const PROMPT: &str = "endfield> ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,10 +68,24 @@ enum Command {
     Status,
     Stop,
     Chinese,
+    Language(Option<Language>),
     Exit,
 }
 
 fn parse_command(input: &str) -> Result<Option<Command>, String> {
+    let words: Vec<_> = input.split_whitespace().collect();
+    if words
+        .first()
+        .is_some_and(|word| word.eq_ignore_ascii_case("language"))
+    {
+        return match words.as_slice() {
+            [_] => Ok(Some(Command::Language(None))),
+            [_, value] => Language::parse(value)
+                .map(|value| Some(Command::Language(Some(value))))
+                .ok_or_else(|| "Usage: language [cn|en]".into()),
+            _ => Err("Usage: language [cn|en]".into()),
+        };
+    }
     match input.trim().to_ascii_lowercase().as_str() {
         "" => Ok(None),
         "help" | "?" => Ok(Some(Command::Help)),
@@ -106,7 +122,12 @@ impl MenuState {
             return completion.candidates.clone();
         }
         let prefix = self.input.trim_start().to_ascii_lowercase();
-        COMMANDS
+        let commands = if prefix.starts_with("language ") {
+            LANGUAGE_COMMANDS
+        } else {
+            COMMANDS
+        };
+        commands
             .iter()
             .copied()
             .filter(|command| command.starts_with(&prefix))
@@ -137,12 +158,21 @@ impl MenuState {
     }
 
     fn hint(&self) -> String {
+        self.hint_in(language::current())
+    }
+
+    fn hint_in(&self, language: Language) -> String {
         let candidates = self.candidates();
         if candidates.is_empty() {
-            return "  [No matching command; help lists commands]".into();
+            return language
+                .text(
+                    "  [无匹配命令；输入 help 查看帮助]",
+                    "  [No matching command; help lists commands]",
+                )
+                .into();
         }
         if candidates.len() == 1 && self.input.eq_ignore_ascii_case(candidates[0]) {
-            return "  [Enter to run]".into();
+            return language.text("  [Enter 执行]", "  [Enter to run]").into();
         }
         let choices: Vec<_> = candidates
             .iter()
@@ -481,6 +511,44 @@ pub(super) fn probe_console_keys() {
         "candidate hints must be removed before logs/command output"
     );
     probe_native_wheel(output);
+    language::probe_saved_language(|| {
+        state = MenuState {
+            input: "language".into(),
+            ..Default::default()
+        };
+        prompt(&state).unwrap();
+        assert_ne!(
+            unsafe { GetConsoleScreenBufferInfo(output, &mut screen) },
+            0
+        );
+        assert_eq!(
+            screen.dwCursorPosition.X as usize,
+            PROMPT.len() + state.input.len()
+        );
+        let position = COORD {
+            X: 0,
+            Y: screen.dwCursorPosition.Y,
+        };
+        assert_ne!(
+            unsafe {
+                ReadConsoleOutputCharacterW(
+                    output,
+                    line.as_mut_ptr(),
+                    line.len() as u32,
+                    position,
+                    &mut read,
+                )
+            },
+            0
+        );
+        let rendered = String::from_utf16_lossy(&line[..read as usize]);
+        assert!(rendered.contains("Enter"));
+        assert!(
+            rendered.contains('执'),
+            "Chinese hint must render in the native console: {rendered}"
+        );
+        finish_input(&state).unwrap();
+    });
     let input = console.input;
     let old_mode = console.input_mode;
     drop(console);
@@ -678,36 +746,106 @@ fn prepare_scrollback() {
 }
 
 fn banner(options: &Options) {
-    println!("\nEndfield Launcher {}", env!("CARGO_PKG_VERSION"));
-    println!("Game: {}", options.game.display());
-    println!("Type help for commands; cn prints earlier logs in Chinese.");
-    println!("Ctrl+Z: stop game. Exit/close launcher: keep game running.\n");
+    println!(
+        "\n{} {}",
+        text("终末地启动器", "Endfield Launcher"),
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("{}: {}", text("游戏", "Game"), options.game.display());
+    println!(
+        "{}",
+        text(
+            "输入 help 查看命令，language 切换默认语言，cn 回放中文日志。",
+            "Type help for commands; language switches display language; cn replays Chinese logs."
+        )
+    );
+    println!(
+        "{}\n",
+        text(
+            "Ctrl+Z 关闭游戏；退出或关闭启动器时游戏继续运行。",
+            "Ctrl+Z: stop game. Exit/close launcher: keep game running."
+        )
+    );
 }
 
 fn help() {
-    println!("start    Check Games.exe updates and start the game (alias: 1)");
-    println!("restart  Stop this session's game, check updates and start again");
-    println!("update   Check/download Games.exe only (alias: 2)");
-    println!("lud      Check/download Rust launcher updates; install after launcher exit");
-    println!("preview  Preview launch without network/processes (alias: 3)");
-    println!("status   Show this session's game status");
-    println!("stop     Stop this session's game (shortcut: Ctrl+Z)");
-    println!("cn       Print a Chinese translation of earlier session logs");
-    println!("help     Show commands");
-    println!("exit     Exit launcher and keep game running (aliases: 0, q)");
-    println!("Candidates appear as you type. Tab / Shift+Tab: cycle completions.");
-    println!("Enter: run the typed command. Up/Down: command history.\n");
+    for (chinese, english) in [
+        (
+            "start     检查 Games.exe 更新并启动游戏（别名：1、launch）",
+            "start     Check Games.exe updates and start the game (aliases: 1, launch)",
+        ),
+        (
+            "restart   关闭本会话游戏，检查更新后重新启动",
+            "restart   Stop this session's game, check updates and start again",
+        ),
+        (
+            "update    仅检查或下载 Games.exe（别名：2）",
+            "update    Check/download Games.exe only (alias: 2)",
+        ),
+        (
+            "lud       后台检查并下载启动器更新，关闭启动器后安装",
+            "lud       Check/download Rust launcher updates; install after launcher exit",
+        ),
+        (
+            "preview   预览启动参数，不联网、不创建进程（别名：3）",
+            "preview   Preview launch without network/processes (alias: 3)",
+        ),
+        (
+            "status    显示本会话游戏状态",
+            "status    Show this session's game status",
+        ),
+        (
+            "stop      关闭本会话游戏（快捷键：Ctrl+Z）",
+            "stop      Stop this session's game (shortcut: Ctrl+Z)",
+        ),
+        (
+            "language  切换并保存默认显示语言；language cn / language en 指定语言",
+            "language  Toggle and save display language; language cn / language en selects it",
+        ),
+        (
+            "cn        回放此前日志的中文翻译，不改变默认语言",
+            "cn        Replay earlier logs in Chinese without changing the display language",
+        ),
+        ("help      显示命令说明", "help      Show commands"),
+        (
+            "exit      退出启动器，游戏继续运行（别名：0、q、quit）",
+            "exit      Exit launcher and keep game running (aliases: 0, q, quit)",
+        ),
+        (
+            "输入时显示候选；Tab / Shift+Tab 循环补全。",
+            "Candidates appear as you type. Tab / Shift+Tab: cycle completions.",
+        ),
+        (
+            "Enter 执行输入的命令，上下键调用历史。",
+            "Enter: run the typed command. Up/Down: command history.",
+        ),
+    ] {
+        println!("{}", text(chinese, english));
+    }
+    println!();
 }
 
 fn status(options: &Options, session: Option<&crate::Session>) {
-    println!("Game: {}", options.game.display());
+    println!("{}: {}", text("游戏", "Game"), options.game.display());
+    println!(
+        "{}: {}",
+        text("默认显示语言", "Default display language"),
+        text("中文 (zh-cn)", "English (en)")
+    );
     if let Some(session) = session {
         println!(
-            "Running (owned by this session), PID: {}",
+            "{}, PID: {}",
+            text("本会话游戏正在运行", "Running (owned by this session)"),
             session.child.id()
         );
     } else {
-        println!("No running game owned by this session.");
+        println!(
+            "{}",
+            text(
+                "本会话没有正在运行的游戏。",
+                "No running game owned by this session."
+            )
+        );
     }
 }
 
@@ -715,8 +853,40 @@ fn prompt(state: &MenuState) -> io::Result<()> {
     render_input(state, true)
 }
 
+fn cell_width(character: char) -> usize {
+    // Our UI uses ASCII and CJK text. Count wide CJK/fullwidth characters as two
+    // console cells, not their UTF-8 byte length; input commands remain ASCII.
+    if matches!(character as u32, 0x1100..=0x115f | 0x2329..=0x232a | 0x2e80..=0xa4cf | 0xac00..=0xd7a3 | 0xf900..=0xfaff | 0xfe10..=0xfe19 | 0xfe30..=0xfe6f | 0xff01..=0xff60 | 0xffe0..=0xffe6 | 0x20000..=0x3fffd)
+    {
+        2
+    } else {
+        1
+    }
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().map(cell_width).sum()
+}
+
+fn truncate_hint(hint: &str, space: usize) -> String {
+    let shortened = display_width(hint) > space;
+    let suffix = if shortened && space >= 3 { "..." } else { "" };
+    let mut remaining = space - suffix.len();
+    let mut result = String::new();
+    for character in hint.chars() {
+        let width = cell_width(character);
+        if width > remaining {
+            break;
+        }
+        result.push(character);
+        remaining -= width;
+    }
+    result.push_str(suffix);
+    result
+}
+
 fn input_line(state: &MenuState, width: usize, show_hint: bool) -> (String, String) {
-    // Keep one spare column to avoid automatic wrapping. All input/hints are ASCII.
+    // Keep one spare column to avoid automatic wrapping. Typed input is ASCII.
     let available = width.saturating_sub(PROMPT.len() + 1);
     let visible = if state.input.len() <= available {
         state.input.clone()
@@ -731,11 +901,7 @@ fn input_line(state: &MenuState, width: usize, show_hint: bool) -> (String, Stri
         String::new()
     };
     let hint_space = available.saturating_sub(visible.len());
-    let hint = if hint.len() > hint_space && hint_space >= 3 {
-        format!("{}...", &hint[..hint_space - 3])
-    } else {
-        hint.chars().take(hint_space).collect()
-    };
+    let hint = truncate_hint(&hint, hint_space);
     (format!("{PROMPT}{visible}"), hint)
 }
 
@@ -760,7 +926,7 @@ fn render_input(state: &MenuState, show_hint: bool) -> io::Result<()> {
         return io::stdout().flush();
     }
     let (typed, hint) = input_line(state, width, show_hint);
-    let padding = width.saturating_sub(1 + typed.len() + hint.len());
+    let padding = width.saturating_sub(1 + display_width(&typed) + display_width(&hint));
     let mut output = io::stdout().lock();
     write!(output, "\r{typed}")?;
     output.flush()?;
@@ -923,7 +1089,14 @@ fn run_inner(
                     prompt(&state).map_err(|error| error.to_string())?;
                 }
                 Err(error) => {
-                    crate::logging::error("未知指令，请输入 help 查看可用命令。", error);
+                    crate::logging::error(
+                        if error.starts_with("Usage:") {
+                            "language 用法：language [cn|en]；不带参数时切换中英文。"
+                        } else {
+                            "未知指令，请输入 help 查看可用命令。"
+                        },
+                        error,
+                    );
                     prompt(&state).map_err(|error| error.to_string())?;
                 }
                 _ => {}
@@ -942,6 +1115,17 @@ fn run_inner(
             }
             Command::Chinese => {
                 crate::logging::print_chinese_history().map_err(|error| error.to_string())?;
+                continue;
+            }
+            Command::Language(requested) => {
+                if let Err(error) = language::change(requested, &options.game) {
+                    crate::logging::error(
+                        format!("语言设置未保存，当前语言保持不变：{error}"),
+                        format!(
+                            "Language setting was not saved; current language unchanged: {error}"
+                        ),
+                    );
+                }
                 continue;
             }
             Command::LauncherUpdate => {
@@ -1018,7 +1202,13 @@ pub(super) fn wait_for_session(
     let Ok(console) = Console::open() else {
         return session.finish();
     };
-    println!("Ctrl+Z: stop game. Ctrl+C / Esc: exit launcher; game keeps running.");
+    println!(
+        "{}",
+        text(
+            "Ctrl+Z 关闭游戏；Ctrl+C / Esc 退出启动器，游戏继续运行。",
+            "Ctrl+Z: stop game. Ctrl+C / Esc: exit launcher; game keeps running."
+        )
+    );
     loop {
         if let Some(job) = job.as_mut() {
             match job.poll() {
@@ -1076,6 +1266,56 @@ mod tests {
         state.handle(Key::Character('9')).unwrap();
         state.handle(Key::Backspace).unwrap();
         assert_eq!(enter(&mut state, "help"), Ok(Some(Command::Help)));
+    }
+
+    #[test]
+    fn language_commands_accept_toggle_and_explicit_language_with_completion() {
+        assert_eq!(
+            parse_command(" LANGUAGE "),
+            Ok(Some(Command::Language(None)))
+        );
+        for (input, language) in [
+            ("language cn", Language::Chinese),
+            ("language ZH-CN", Language::Chinese),
+            ("language en", Language::English),
+        ] {
+            assert_eq!(
+                parse_command(input),
+                Ok(Some(Command::Language(Some(language))))
+            );
+        }
+        assert!(parse_command("language fr").is_err());
+        assert!(parse_command("language cn en").is_err());
+        let mut state = MenuState {
+            input: "language ".into(),
+            ..Default::default()
+        };
+        assert_eq!(state.candidates(), vec!["language cn", "language en"]);
+        state.handle(Key::Tab).unwrap();
+        assert_eq!(state.input, "language cn");
+        state.handle(Key::Tab).unwrap();
+        assert_eq!(state.input, "language en");
+        assert_eq!(
+            state.handle(Key::Enter),
+            Ok(Some(Command::Language(Some(Language::English))))
+        );
+    }
+
+    #[test]
+    fn chinese_hints_are_truncated_at_character_and_console_cell_boundaries() {
+        let mut state = MenuState {
+            input: "unknown".into(),
+            ..Default::default()
+        };
+        let hint = state.hint_in(Language::Chinese);
+        assert!(hint.contains("无匹配命令"));
+        for width in 0..80 {
+            let displayed = truncate_hint(&hint, width);
+            assert!(display_width(&displayed) <= width);
+            assert!(displayed.chars().all(|character| character != '\u{fffd}'));
+        }
+        state.input = "language".into();
+        assert_eq!(state.hint_in(Language::Chinese), "  [Enter 执行]");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 /artifacts/
 **/endfield-cache/
 **/launcher-update/
+**/launcher-settings.json
 
 # Compiled programs and third-party binaries (including official Games.exe)
 *.exe

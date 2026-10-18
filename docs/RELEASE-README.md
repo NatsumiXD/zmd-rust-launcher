@@ -20,6 +20,10 @@ For a different game location, run from an administrator PowerShell:
 Type `start` to launch, `restart` to restart, `stop` or Ctrl+Z to stop the owned game,
 `cn` to replay previous logs in Chinese, and `help` for all commands.
 Tab / Shift+Tab cycle completion candidates; Enter runs the command.
+`language` toggles the default display language; `language cn` / `language en` selects it.
+This immediately changes future logs, help, status and hints, and saves the preference
+in `launcher-settings.json` beside the EXE for the next startup. First use defaults to English.
+`cn` only replays history and does not change this preference. The game's `--lang` is independent.
 Closing or exiting the visible launcher keeps the game running.
 
 Every game launch requests a background Rust-launcher update check; `lud` requests another check.
@@ -28,6 +32,10 @@ The background worker can finish downloading after the window closes; the game k
 
 输入 `start` 启动、`restart` 重启、`stop` 或 Ctrl+Z 关闭自有游戏；`cn` 回放中文日志，`help` 查看帮助。
 Tab / Shift+Tab 循环补全，Enter 执行。直接关闭或退出可见启动器时游戏继续运行。
+
+`language` 切换默认中英文，`language cn` / `language en` 指定语言，立即影响后续日志、帮助、状态和提示。
+选择写入 EXE 旁的 `launcher-settings.json`，下次启动沿用，启动器自更新后保留；首次默认为英文。
+`cn` 仅回放历史，不改变默认语言；游戏启动参数 `--lang` 与显示语言独立。无法保存时提示错误并保持原语言。
 
 每次启动游戏后自动在后台检查 Rust 启动器更新，`lud` 可手动检查（`update` 仍只更新 Games.exe）。先测速官方与镜像，再下载、校验并暂存；启动器关闭后才应用，保留旧版备份，不关闭游戏、不自动重开窗口。提前关闭窗口时，后台仍会继续完成下载和更新。
 

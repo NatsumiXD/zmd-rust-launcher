@@ -1036,6 +1036,15 @@ mod tests {
     #[test]
     #[ignore = "isolated console host; run via workspace_console_ctrl_c_and_menu_probe"]
     fn isolated_console_host() {
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = std::fs::write(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("analysis/console-probe-panic.txt"),
+                info.to_string(),
+            );
+            original_hook(info);
+        }));
         let mut console_processes = [0; 8];
         if unsafe {
             windows_sys::Win32::System::Console::GetConsoleProcessList(

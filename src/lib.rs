@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod acquisition;
+mod language;
 mod logging;
 #[cfg(windows)]
 mod menu;
@@ -18,12 +19,13 @@ mod windows;
 const DEFAULT_GAME: &str = r"D:\yj\Hypergryph Launcher\games\Arknights Endfield\Endfield.exe";
 const HELP: &str = "endfield-direct-launch [OPTIONS] [-- EXTRA_GAME_ARGS...]
 
-Default: print English startup logs, start the game, then open the command console.
-Commands: start, restart, update, lud, preview, status, stop, cn, help, exit.
+Default: print startup logs, start the game, then open the command console.
+Commands: start, restart, update, lud, preview, status, stop, language, cn, help, exit.
 lud checks/benchmarks/downloads Rust launcher updates; applies after launcher exit.
 Every successful game launch also requests this background update check.
 restart stops this session's game, waits for cleanup, then checks updates and starts again.
-cn prints earlier session logs in Chinese; future logs remain English.
+language toggles the saved display language; language cn / language en selects it.
+cn prints earlier session logs in Chinese without changing the display language.
 Candidates appear as you type; Tab / Shift+Tab cycle completions.
 Enter runs the typed command; Up/Down recalls command history.
 With command-line options: check/download if needed, then start the game.
@@ -59,6 +61,38 @@ No injection, hooks, patching, or shell is used.
 Acquisition uses native Windows HTTPS and Authenticode; no PowerShell is needed.
 If update checks fail, a verified cache can be used with a visible warning.
 The CN/EndField managed parent channel is independent of game launch options.";
+
+const HELP_ZH: &str = "endfield-direct-launch [选项] [-- 额外游戏参数...]
+
+默认：输出启动日志，检查 Games.exe 并启动游戏，随后进入命令终端。
+命令：start、restart、update、lud、preview、status、stop、language、cn、help、exit。
+language 切换并保存中英文显示语言；language cn / language en 指定语言。
+cn 仅回放此前日志的中文翻译，不改变默认语言。
+lud 后台检查、测速、下载启动器更新，关闭启动器后应用；每次启动游戏后也会自动检查。
+Tab / Shift+Tab 循环补全，Enter 执行，上下键调用历史。
+
+  --game PATH          Endfield.exe 的绝对路径
+  --cache-dir PATH     管理缓存（默认启动器旁的 endfield-cache）
+  --parent PATH        指定官方父映像，跳过托管更新
+  --offline            不联网，使用已验证的本地或缓存 Games.exe
+  --no-local-parent    跳过本地 Games.exe 搜索，使用缓存或下载
+  --direct             无官方父进程直接启动（此前游戏测试失败）
+  --lang VALUE         游戏启动参数语言，默认 zh-cn；与显示语言独立
+  --render MODE        default | dx11 | vk
+  --sub-channel VALUE  launcher_sub_channel，默认 1；none 不传递
+  --tracking-code VALUE 可选 tracking_code
+  --menu               仅打开命令终端，不自动启动游戏
+  --launch             检查更新并启动，不进入菜单
+  --update-only        仅检查或下载 Games.exe
+  --dry-run            仅预览，不联网、不下载、不创建进程
+  --wait               直接模式下等待；官方父进程模式始终等待
+  -h, --help           显示帮助
+
+启动器通过 Windows 父进程属性启动游戏，官方父进程主线程保持挂起。
+Ctrl+Z 关闭本会话游戏；退出或关闭启动器时游戏继续运行，隐藏守护在游戏结束后清理父进程。
+启动器请求管理员权限。不注入、不 hook、不修改官方程序；游戏自身可能写入日志或状态。
+启动器须放在官方安装目录之外。下载、签名与版本校验使用原生 Windows API。
+更新检查失败时可回退到已验证缓存，并显示提示。";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -687,6 +721,7 @@ pub fn entrypoint() -> ExitCode {
             ExitCode::FAILURE
         };
     }
+    language::initialize();
     let no_args = args.is_empty();
     match parse(args).and_then(|options| match options {
         Some(options) if no_args || options.menu => {
@@ -701,7 +736,7 @@ pub fn entrypoint() -> ExitCode {
         }
         Some(options) => run(options),
         None => {
-            println!("{HELP}");
+            println!("{}", language::text(HELP_ZH, HELP));
             Ok(true)
         }
     }) {

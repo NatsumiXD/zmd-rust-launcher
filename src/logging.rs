@@ -45,7 +45,13 @@ impl History {
         }
     }
 
-    fn push(&mut self, chinese: impl Display, english: impl Display, error: bool) -> String {
+    fn push(
+        &mut self,
+        chinese: impl Display,
+        english: impl Display,
+        error: bool,
+        language: crate::language::Language,
+    ) -> String {
         let record = Record {
             id: self.next_id,
             error,
@@ -53,7 +59,7 @@ impl History {
             english: single_line(english),
         };
         self.next_id = self.next_id.saturating_add(1);
-        let output = record.line(false);
+        let output = record.line(language == crate::language::Language::Chinese);
         self.bytes += record.chinese.len() + record.english.len();
         self.records.push_back(record);
         while self.records.len() > MAX_RECORDS || self.bytes > MAX_BYTES {
@@ -76,7 +82,7 @@ impl History {
         for record in &self.records {
             output.push_str(&record.line(true));
         }
-        output.push_str("--- 翻译结束；后续日志仍使用英文 ---\n");
+        output.push_str("--- 翻译结束；后续日志使用当前默认语言 ---\n");
         output
     }
 }
@@ -126,7 +132,12 @@ fn emit(chinese: impl Display, english: impl Display, error: bool) {
         english: english.to_string(),
         error,
     };
-    let line = history.push(&record.chinese, &record.english, error);
+    let line = history.push(
+        &record.chinese,
+        &record.english,
+        error,
+        crate::language::current(),
+    );
     if let Some(file) = JOURNAL
         .lock()
         .unwrap_or_else(|value| value.into_inner())
@@ -170,17 +181,23 @@ pub fn print_chinese_history() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language::Language::{Chinese, English};
 
     #[test]
     fn english_logs_are_single_lines_and_cn_replays_history_without_changing_output_language() {
         let mut history = History::new();
         assert_eq!(
-            history.push("游戏已启动", "Game started", false),
+            history.push("游戏已启动", "Game started", false, English),
             "[0001 INFO] Game started\n"
         );
         assert_eq!(
             history
-                .push("路径含\n换行", "detail\tvalue\x1b[2J\u{2028}", true)
+                .push(
+                    "路径含\n换行",
+                    "detail\tvalue\x1b[2J\u{2028}",
+                    true,
+                    English
+                )
                 .lines()
                 .count(),
             1
@@ -192,7 +209,7 @@ mod tests {
         assert_eq!(history.records.len(), before, "replay must not log itself");
         assert_eq!(history.chinese(), translated);
         assert_eq!(
-            history.push("下一条", "Next entry", false),
+            history.push("下一条", "Next entry", false, English),
             "[0003 INFO] Next entry\n"
         );
     }
@@ -201,15 +218,31 @@ mod tests {
     fn bounded_history_reports_omissions_and_keeps_recent_entries() {
         let mut history = History::new();
         for _ in 0..MAX_RECORDS + 2 {
-            history.push("中文", "English", false);
+            history.push("中文", "English", false, English);
         }
         assert_eq!(history.records.len(), MAX_RECORDS);
         assert_eq!(history.dropped, 2);
         assert_eq!(history.records.front().unwrap().id, 3);
         assert!(history.chinese().contains("更早的 2 条"));
         let mut history = History::new();
-        history.push("x".repeat(MAX_BYTES + 1), "Oversized entry", false);
+        history.push("x".repeat(MAX_BYTES + 1), "Oversized entry", false, English);
         assert!(history.records.is_empty());
         assert_eq!(history.dropped, 1);
+    }
+
+    #[test]
+    fn selected_language_applies_to_new_records_while_cn_keeps_both_translations() {
+        let mut history = History::new();
+        assert_eq!(
+            history.push("已启动", "Started", false, Chinese),
+            "[0001 INFO] 已启动\n"
+        );
+        let translated = history.chinese();
+        assert!(translated.contains("已启动"));
+        assert_eq!(
+            history.push("已关闭", "Stopped", false, English),
+            "[0002 INFO] Stopped\n"
+        );
+        assert!(history.chinese().contains("[0002 INFO] 已关闭"));
     }
 }
